@@ -959,7 +959,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     mac = self.vip_detail[port_id]['mac_address']
                     ip = self.vip_detail[port_id]['fixed_ips'][0]['ip_address']
                     self.tun_br.delete_to_group(lvm.vlan, mac)
-                    self.tun_br.delete_arp_responder(vlan, ip)
+                    self.tun_br.delete_arp_responder(lvm.vlan, ip)
                     self.vip_detail.pop(port_id, None)
                 self.network_vip.pop(net_uuid, None)
                 self.tun_br.delete_group(lvm.vlan)
