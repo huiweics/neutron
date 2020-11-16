@@ -211,6 +211,43 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
             match = self._unicast_to_tun_match(ofp, ofpp, vlan, mac)
         self.uninstall_flows(table_id=constants.UCAST_TO_TUN, match=match)
 
+    def install_to_group(self, vlan, mac):
+        (_dp, ofp, ofpp) = self._get_dp()
+        match = self._unicast_to_tun_match(ofp, ofpp, vlan, mac)
+
+        group_action = [ofpp.OFPActionGroup(group_id=vlan)]
+
+        self.install_apply_actions(table_id=constants.UCAST_TO_TUN,
+                                   priority=3,
+                                   match=match,
+                                   actions=group_action)
+
+    def delete_to_group(self, vlan, mac):
+        (_dp, ofp, ofpp) = self._get_dp()
+        if mac is None:
+            match = ofpp.OFPMatch(vlan_vid=vlan | ofp.OFPVID_PRESENT)
+        else:
+            match = self._unicast_to_tun_match(ofp, ofpp, vlan, mac)
+        self.uninstall_flows(table_id=constants.UCAST_TO_TUN, match=match)
+
+    def install_group(self, vlan, tun_id, ofports):
+        (_dp, ofp, ofpp) = self._get_dp()
+        buckets = list()
+        for ofport in ofports:
+            bucket_actions = [ofpp.OFPActionPopVlan(),
+                              ofpp.OFPActionSetField(tunnel_id=tun_id),
+                              ofpp.OFPActionOutput(ofport, 0)]
+            bucket = self.create_bucket(ofport, bucket_actions)
+            buckets.append(bucket)
+        self.install_group_flow(vlan, buckets)
+
+    def delete_group(self, vlan):
+        self.uninstall_group_flow(vlan)
+
+    def delete_all_groups(self):
+        (_dp, ofp, ofpp) = self._get_dp()
+        self.uninstall_group_flow(ofp.OFPG_ALL)
+
     @staticmethod
     def _arp_responder_match(ofp, ofpp, vlan, ip):
         # REVISIT(yamamoto): add arp_op=arp.ARP_REQUEST matcher?

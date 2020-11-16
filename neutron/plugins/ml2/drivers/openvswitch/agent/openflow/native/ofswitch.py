@@ -250,6 +250,33 @@ class OpenFlowSwitchMixin(object):
     def bundled(self, atomic=False, ordered=False):
         return BundledOpenFlowBridge(self, atomic, ordered)
 
+    def create_bucket(self, ofport, actions):
+        (dp, ofp, ofpp) = self._get_dp()
+        bucket = ofpp.OFPBucket(watch_port=ofport, actions=actions)
+        return bucket
+
+    def install_group_flow(self, group_id, buckets):
+        (dp, ofp, ofpp) = self._get_dp()
+        msg = ofpp.OFPGroupMod(dp, ofp.OFPGC_ADD,
+                 ofp.OFPGT_SELECT, group_id=group_id, buckets=buckets)
+        self._send_msg(msg)
+
+    def uninstall_group_flow(self, group_id):
+        (dp, ofp, ofpp) = self._get_dp()
+        msg = ofpp.OFPGroupMod(dp, ofp.OFPGC_DELETE, group_id=group_id)
+        self._send_msg(msg)
+
+    def install_group_bucket(self, group_id, buckets):
+        (dp, ofp, ofpp) = self._get_dp()
+        msg = ofpp.OFPGroupMod(dp, ofp.OFPGC_INSERT_BUCKET,
+                 ofp.OFPGT_SELECT, group_id=group_id, buckets=buckets)
+        self._send_msg(msg)
+
+    def uninstall_group_bucket(self, group_id, buckets):
+        (dp, ofp, ofpp) = self._get_dp()
+        msg = ofpp.OFPGroupMod(dp, ofp.OFPGC_REMOVE_BUCKET,
+                 ofp.OFPGT_SELECT, group_id=group_id, buckets=buckets)
+        self._send_msg(msg)
 
 class BundledOpenFlowBridge(object):
     def __init__(self, br, atomic, ordered):

@@ -135,6 +135,8 @@ ovs_opts = [
                       "switch connection to the controller. "
                       "A value of 0 disables inactivity probes. "
                       "Used only for 'native' driver.")),
+     cfg.StrOpt('idc_lb_vxlan_remote_ips', default='',
+               help=_("idc lb vxlan tunnel remote ips")),
 ]
 
 agent_opts = [

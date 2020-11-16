@@ -143,6 +143,10 @@ class PluginApi(object):
             'get_devices_details_list_and_failed_devices',
             devices=devices, agent_id=agent_id, host=host)
 
+    def get_network_vip_ports(self, context, net_uuid):
+        cctxt = self.client.prepare()
+        return cctxt.call(context, 'get_network_vip_ports', net_uuid=net_uuid)
+
     def update_device_down(self, context, device, agent_id, host=None):
         cctxt = self.client.prepare()
         return cctxt.call(context, 'update_device_down', device=device,
@@ -365,3 +369,7 @@ class CacheBackedPluginApi(PluginApi):
     def get_devices_details_list(self, context, devices, agent_id, host=None):
         return [self.get_device_details(context, device, agent_id, host)
                 for device in devices]
+
+    def get_device_details_for_network_vip(self, context, device, agent_id, host=None,
+                                                           agent_restarted=False):
+        return super(CacheBackedPluginApi, self).get_device_details(context, device, agent_id, host)

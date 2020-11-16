@@ -1148,6 +1148,18 @@ class OVSBridge(BaseOVS):
             port_type = [port_type]
         return [port['name'] for port in ports if port['type'] in port_type]
 
+    def set_port_bfd(self, port_name, state, local_ip, remote_ip):
+        if state:
+            bfd = {'enable':'true',
+                   'bfd_src_ip':local_ip,
+                   'bfd_dst_ip':remote_ip}
+            self.set_db_attribute('Interface', port_name, 'bfd', bfd,
+                                  check_error=True)
+        else:
+            bfd = {'enable':'false'}
+            self.clear_db_attribute('Interface', port_name, 'bfd', bfd,
+                                    check_error=True)
+
     def __enter__(self):
         self.create()
         return self

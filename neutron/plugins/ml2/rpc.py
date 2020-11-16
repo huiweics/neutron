@@ -33,13 +33,17 @@ from neutron.api.rpc.handlers import securitygroups_rpc as sg_rpc
 from neutron.common import constants as c_const
 from neutron.db import l3_hamode_db
 from neutron.db import provisioning_blocks
+from neutron.db import segments_db
+from neutron_lib.api.definitions import segment as segment_def
 from neutron.plugins.ml2 import db as ml2_db
 from neutron.plugins.ml2.drivers import type_tunnel
 # REVISIT(kmestery): Allow the type and mechanism drivers to supply the
 # mixins and eventually remove the direct dependencies on type_tunnel.
 
 LOG = log.getLogger(__name__)
-
+NETWORK_TYPE = segment_def.NETWORK_TYPE
+PHYSICAL_NETWORK = segment_def.PHYSICAL_NETWORK
+SEGMENTATION_ID = segment_def.SEGMENTATION_ID
 
 class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
 
@@ -129,7 +133,25 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
                          'agent_id': agent_id,
                          'network_id': port['network_id'],
                          'vif_type': port_context.vif_type})
-            return {'device': device}
+            if str(port['device_owner']) == n_const.DEVICE_OWNER_NETWORK_VIP:
+                segment = segments_db.get_network_segments(rpc_context, port['network_id'])
+                if segment:
+                    entry = {'device': device,
+                             'network_id': port['network_id'],
+                             'port_id': port['id'],
+                             'mac_address': port['mac_address'],
+                             'network_type': segment[0][NETWORK_TYPE],
+                             'segmentation_id': segment[0][SEGMENTATION_ID],
+                             'physical_network': segment[0][PHYSICAL_NETWORK],
+                             'fixed_ips': port['fixed_ips'],
+                             'device_owner': port['device_owner']}
+                    LOG.debug("network vip port entry %s", entry)
+                else:
+                    LOG.debug("network vip port no segment")
+            else:
+                entry = {'device': device}
+                LOG.debug("not network vip port %s", entry)
+            return entry
 
         if (port['device_owner'].startswith(
                 n_const.DEVICE_OWNER_COMPUTE_PREFIX) and
@@ -220,6 +242,14 @@ class RpcCallbacks(type_tunnel.TunnelRpcCallbackMixin):
 
         return {'devices': devices,
                 'failed_devices': failed_devices}
+
+    def get_network_vip_ports(self, rpc_context, **kwargs):
+        network_id = kwargs['net_uuid']
+        plugin = directory.get_plugin()
+        filters = {'network_id': [network_id],
+                   'device_owner': [n_const.DEVICE_OWNER_NETWORK_VIP]}
+        ports = plugin.get_ports(rpc_context, filters=filters)
+        return ports
 
     def update_device_down(self, rpc_context, **kwargs):
         """Device no longer exists on agent."""
