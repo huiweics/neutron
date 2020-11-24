@@ -211,11 +211,11 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
             match = self._unicast_to_tun_match(ofp, ofpp, vlan, mac)
         self.uninstall_flows(table_id=constants.UCAST_TO_TUN, match=match)
 
-    def install_to_group(self, vlan, mac):
+    def install_to_group(self, vlan, mac, tun_id):
         (_dp, ofp, ofpp) = self._get_dp()
         match = self._unicast_to_tun_match(ofp, ofpp, vlan, mac)
 
-        group_action = [ofpp.OFPActionGroup(group_id=vlan)]
+        group_action = [ofpp.OFPActionGroup(group_id=tun_id)]
 
         self.install_apply_actions(table_id=constants.UCAST_TO_TUN,
                                    priority=3,
@@ -230,7 +230,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
             match = self._unicast_to_tun_match(ofp, ofpp, vlan, mac)
         self.uninstall_flows(table_id=constants.UCAST_TO_TUN, match=match)
 
-    def install_group(self, vlan, tun_id, ofports):
+    def install_group(self, tun_id, ofports):
         (_dp, ofp, ofpp) = self._get_dp()
         buckets = list()
         for ofport in ofports:
@@ -239,14 +239,20 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
                               ofpp.OFPActionOutput(ofport, 0)]
             bucket = self.create_bucket(ofport, bucket_actions)
             buckets.append(bucket)
-        self.install_group_flow(vlan, buckets)
+        self.install_group_flow(tun_id, buckets)
 
-    def delete_group(self, vlan):
-        self.uninstall_group_flow(vlan)
+    def delete_group(self, tun_id):
+        self.uninstall_group_flow(tun_id)
 
-    def delete_all_groups(self):
+    def dump_groups(self):
         (_dp, ofp, ofpp) = self._get_dp()
-        self.uninstall_group_flow(ofp.OFPG_ALL)
+        msg = ofpp.OFPGroupDescStatsRequest(_dp)
+        replys = self._send_msg(msg, reply_cls=ofpp.OFPGroupDescStatsReply, reply_multi=True)
+        groups = set()
+        for reply in replys:
+            for stats in reply.body:
+                groups.add(stats.group_id)
+        return groups
 
     @staticmethod
     def _arp_responder_match(ofp, ofpp, vlan, ip):

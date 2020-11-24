@@ -250,6 +250,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             self.setup_tunnel_br(ovs_conf.tunnel_bridge)
             self.setup_tunnel_br_flows()
 
+        self.enable_vip = False
+        self.groups = None
         self.setup_rpc()
 
         self.dvr_agent = ovs_dvr_neutron_agent.OVSDVRNeutronAgent(
@@ -355,7 +357,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
         self.quitting_rpc_timeout = agent_conf.quitting_rpc_timeout
 
-        self.enable_vip = False
+
         self.idc_lb_vxlan_remote_ips = ovs_conf.idc_lb_vxlan_remote_ips
         if self.arp_responder_enabled and self.enable_tunneling and self.idc_lb_vxlan_remote_ips:
             self.enable_vip = True
@@ -375,7 +377,8 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                                      n_const.TYPE_VXLAN)
                     self.vip_vxlan_ofport[ip] = ofport
                     self.tun_br.set_port_bfd(port_name, True, self.local_ip, ip)
-            self.tun_br.delete_all_groups()
+            self.groups = self.tun_br.dump_groups()
+            LOG.debug("group table is %s", self.groups)
 
     def _parse_bridge_mappings(self, bridge_mappings):
         try:
@@ -496,6 +499,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                                                                       self.agent_id,
                                                                       self.conf.host)
             if port and (port['device_owner'] == n_const.DEVICE_OWNER_NETWORK_VIP):
+                LOG.debug("update vip port %s", port)
                 port_id = port['port_id']
                 if port_id not in self.vip_detail:
                     net_uuid = port['network_id']
@@ -510,14 +514,18 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
 
                     if net_uuid not in self.network_vip:
                         self.network_vip[net_uuid] = list(port_id)
-                        self.tun_br.install_group(vlan, tun_id, self.vip_vxlan_ofport.values())
+                        if tun_id in self.groups:
+                            self.groups.discard(tun_id)
+                        else:
+                            self.tun_br.install_group(tun_id, self.vip_vxlan_ofport.values())
                     else:
                         self.network_vip[net_uuid].append(port_id)
                     self.tun_br.install_arp_responder(vlan, port['fixed_ips'][0]['ip_address'], mac)
-                    self.tun_br.install_to_group(vlan, mac)
+                    self.tun_br.install_to_group(vlan, mac, tun_id)
                     port_dict = {'mac_address':mac,
                                  'net_uuid':net_uuid,
                                  'vlan':vlan,
+                                 'segmentation_id':tun_id,
                                  'fixed_ips':port['fixed_ips']}
                     self.vip_detail[port_id] = port_dict
                 else:
@@ -525,9 +533,10 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     old_mac = self.vip_detail[port_id]['mac_address']
                     new_mac = port['mac_address']
                     new_ips = port['fixed_ips']
+                    tun_id = port['segmentation_id']
                     if new_mac != old_mac:
                         self.tun_br.delete_to_group(vlan, old_mac)
-                        self.tun_br.install_to_group(vlan, new_mac)
+                        self.tun_br.install_to_group(vlan, new_mac, tun_id)
                         self.vip_detail[port_id]['mac_address'] = new_mac
                     old_ips = self.vip_detail[port_id]['fixed_ips']
                     if  new_ips[0]['ip_address'] != old_ips[0]['ip_address']:
@@ -554,8 +563,10 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         port_id = kwargs.get('port_id')
         if port_id in self.vip_detail and self.enable_vip:
             port_dict = self.vip_detail[port_id]
+            LOG.debug("delete vip port %s", port_id)
             mac = port_dict['mac_address']
             vlan = port_dict['vlan']
+            tun_id = port_dict['segmentation_id']
             ip = port_dict['fixed_ips'][0]['ip_address']
             self.vip_detail.pop(port_id, None)
             self.tun_br.delete_to_group(vlan, mac)
@@ -563,7 +574,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
             net_uuid = port_dict['net_uuid']
             self.network_vip[net_uuid].remove(port_id)
             if len(self.network_vip[net_uuid]) == 0:
-                self.tun_br.delete_group(vlan)
+                self.tun_br.delete_group(tun_id)
                 self.network_vip.pop(net_uuid, None)
             return
 
@@ -857,18 +868,23 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                 vip_ports = self.plugin_rpc.get_network_vip_ports(self.context,
                                                                   net_uuid)
                 if vip_ports:
+                    LOG.debug("get vip port %s", vip_ports)
                     self.network_vip[net_uuid] = list()
-                    self.tun_br.install_group(lvid, segmentation_id, self.vip_vxlan_ofport.values())
+                    if segmentation_id in self.groups:
+                        self.groups.discard(segmentation_id)
+                    else:
+                        self.tun_br.install_group(segmentation_id, self.vip_vxlan_ofport.values())
                     for port in vip_ports:
                         port_id = port['id']
                         mac = port['mac_address']
                         ip = port['fixed_ips'][0]['ip_address']
-                        self.tun_br.install_to_group(lvid, mac)
+                        self.tun_br.install_to_group(lvid, mac, segmentation_id)
                         self.tun_br.install_arp_responder(lvid, ip, mac)
                         self.network_vip[net_uuid].append(port_id)
                         port_dict = {'mac_address':mac,
                                      'net_uuid':net_uuid,
                                      'vlan':lvid,
+                                     'segmentation_id':segmentation_id,
                                      'fixed_ips':port['fixed_ips']}
                         self.vip_detail[port_id] = port_dict
 
@@ -962,7 +978,7 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
                     self.tun_br.delete_arp_responder(lvm.vlan, ip)
                     self.vip_detail.pop(port_id, None)
                 self.network_vip.pop(net_uuid, None)
-                self.tun_br.delete_group(lvm.vlan)
+                self.tun_br.delete_group(lvm.segmentation_id)
 
         elif lvm.network_type == n_const.TYPE_FLAT:
             if lvm.physical_network in self.phys_brs:
@@ -2262,6 +2278,10 @@ class OVSNeutronAgent(l2population_rpc.L2populationRpcCallBackTunnelMixin,
         if self.enable_tunneling:
             LOG.info("Cleaning stale %s flows", self.tun_br.br_name)
             self.tun_br.cleanup_flows()
+        if self.enable_vip:
+            LOG.info("Cleaning stale %s group table", self.tun_br.br_name)
+            for group_id in self.groups:
+                self.tun_br.delete_group(group_id)
 
     def process_port_info(self, start, polling_manager, sync, ovs_restarted,
                           ports, ancillary_ports, updated_ports_copy,
