@@ -233,7 +233,7 @@ class OVSBridge(BaseOVS):
         self.br_name = br_name
         self.datapath_type = datapath_type
         self._default_cookie = generate_random_cookie()
-        self._highest_protocol_needed = constants.OPENFLOW10
+        self._highest_protocol_needed = constants.OPENFLOW15
         self._min_bw_qos_id = uuidutils.generate_uuid()
 
     @property
@@ -1159,6 +1159,34 @@ class OVSBridge(BaseOVS):
             bfd = {'enable':'false'}
             self.clear_db_attribute('Interface', port_name, 'bfd', bfd,
                                     check_error=True)
+
+    def ofctl_add_group(self, group, deferred_br=None):
+        br = deferred_br if deferred_br else self
+        self.run_ofctl('add-group', [group])
+
+    def ofctl_del_group(self, group, deferred_br=None):
+        br = deferred_br if deferred_br else self
+        self.run_ofctl('del-groups', [group])
+
+    def ofctl_add_to_group(self, vlan, mac, group_id,
+                               deferred_br=None):
+        br = deferred_br if deferred_br else self
+        br.add_flow(table=constants.UCAST_TO_TUN,
+                    priority=3,
+                    dl_vlan=vlan,
+                    dl_dst=mac,
+                    actions="strip_vlan,set_tunnel:%s,group:%s" %
+                    (group_id, group_id))
+
+    def delete_del_to_group(self, vlan, mac, deferred_br=None):
+        br = deferred_br if deferred_br else self
+        if mac is None:
+            br.delete_flows(table=constants.UCAST_TO_TUN,
+                            dl_vlan=vlan)
+        else:
+            br.delete_flows(table=constants.UCAST_TO_TUN,
+                            dl_vlan=vlan,
+                            dl_dst=mac)
 
     def __enter__(self):
         self.create()

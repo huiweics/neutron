@@ -215,7 +215,9 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
         (_dp, ofp, ofpp) = self._get_dp()
         match = self._unicast_to_tun_match(ofp, ofpp, vlan, mac)
 
-        group_action = [ofpp.OFPActionGroup(group_id=tun_id)]
+        group_action = [ofpp.OFPActionPopVlan(),
+                        ofpp.OFPActionSetField(tunnel_id=tun_id),
+                        ofpp.OFPActionGroup(group_id=tun_id)]
 
         self.install_apply_actions(table_id=constants.UCAST_TO_TUN,
                                    priority=3,
@@ -234,9 +236,7 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
         (_dp, ofp, ofpp) = self._get_dp()
         buckets = list()
         for ofport in ofports:
-            bucket_actions = [ofpp.OFPActionPopVlan(),
-                              ofpp.OFPActionSetField(tunnel_id=tun_id),
-                              ofpp.OFPActionOutput(ofport, 0)]
+            bucket_actions = [ofpp.OFPActionOutput(ofport, 0)]
             bucket = self.create_bucket(ofport, bucket_actions)
             buckets.append(bucket)
         self.install_group_flow(tun_id, buckets)
@@ -244,14 +244,17 @@ class OVSTunnelBridge(ovs_bridge.OVSAgentBridge,
     def delete_group(self, tun_id):
         self.uninstall_group_flow(tun_id)
 
-    def dump_groups(self):
+    def dump_groups(self, bucket_num):
         (_dp, ofp, ofpp) = self._get_dp()
         msg = ofpp.OFPGroupDescStatsRequest(_dp)
         replys = self._send_msg(msg, reply_cls=ofpp.OFPGroupDescStatsReply, reply_multi=True)
         groups = set()
         for reply in replys:
             for stats in reply.body:
-                groups.add(stats.group_id)
+                if bucket_num != len(stats.buckets):
+                    self.uninstall_group_flow(stats.group_id)
+                else:
+                    groups.add(stats.group_id)
         return groups
 
     @staticmethod

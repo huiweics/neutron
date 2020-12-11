@@ -252,7 +252,7 @@ class OpenFlowSwitchMixin(object):
 
     def create_bucket(self, ofport, actions):
         (dp, ofp, ofpp) = self._get_dp()
-        bucket = ofpp.OFPBucket(watch_port=ofport, actions=actions)
+        bucket = ofpp.OFPBucket(weight=1, watch_port=ofport, actions=actions)
         return bucket
 
     def install_group_flow(self, group_id, buckets):
