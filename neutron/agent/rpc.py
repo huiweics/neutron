@@ -251,6 +251,12 @@ class CacheBackedPluginApi(PluginApi):
             payload = {rtype: {'id': resource_id},
                        '%s_id' % rtype: resource_id}
             if method == "port_update" and agent_restarted is not None:
+                if (kwargs['existing'] and
+                   kwargs['updated'].device_owner == constants.DEVICE_OWNER_NETWORK_VIP):
+                    payload['is_vip'] = True
+                if (kwargs['updated'] and
+                   kwargs['updated'].device_owner == constants.DEVICE_OWNER_NETWORK_VIP):
+                    payload['is_vip'] = True
                 # Mark ovs-agent restart for local port_update
                 payload["agent_restarted"] = agent_restarted
             getattr(self._legacy_interface, method)(context, **payload)

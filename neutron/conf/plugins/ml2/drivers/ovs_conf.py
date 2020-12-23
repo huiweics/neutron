@@ -137,6 +137,8 @@ ovs_opts = [
                       "Used only for 'native' driver.")),
      cfg.StrOpt('idc_lb_vxlan_remote_ips', default='',
                help=_("idc lb vxlan tunnel remote ips")),
+     cfg.StrOpt('to_idc_lb_hash_fields', default='ip_src,ip_dst,ip_proto',
+               help=_("fields to use to compute hash, fields is flow match fields")),
 ]
 
 agent_opts = [
