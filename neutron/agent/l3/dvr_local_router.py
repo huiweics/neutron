@@ -47,6 +47,15 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
         self.rtr_fip_connect = False
         self.fip_ns = None
         self._pending_arp_set = set()
+        self._init_floating_ips_dict()
+
+    def _init_floating_ips_dict(self):
+        for fip in self.get_floating_ips():
+            LOG.debug("init floating ip dict is: %s", fip)
+            floating_ip = fip.get('floating_ip_address')
+            fixed_ip = fip.get('fixed_ip_address')
+            if floating_ip and fixed_ip:
+                self.floating_ips_dict[floating_ip] = fixed_ip
 
     def migrate_centralized_floating_ip(self, fip, interface_name, device):
         # Remove the centralized fip first and then add fip to the host
@@ -639,12 +648,15 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
 
     def connect_rtr_2_fip(self):
         self._check_rtr_2_fip_connect()
-        if self.fip_ns.agent_gateway_port and not self.rtr_fip_connect:
-            ex_gw_port = self.get_ex_gw_port()
-            self.fip_ns.create_rtr_2_fip_link(self)
-            self.set_address_scope_interface_routes(ex_gw_port)
-            self.rtr_fip_connect = True
-            self.routes_updated([], self.router['routes'])
+        if self.fip_ns.agent_gateway_port:
+            if not self.rtr_fip_connect:
+                ex_gw_port = self.get_ex_gw_port()
+                self.fip_ns.create_rtr_2_fip_link(self)
+                self.rtr_fip_connect = True
+                self.set_address_scope_interface_routes(ex_gw_port)
+                self.routes_updated([], self.router['routes'])
+            iif = self.fip_ns.get_int_device_name(self.router_id)
+            self.fip_ns.update_rtr_ext_route_rule_to_route_table(self, iif)
 
     def _check_if_address_scopes_match(self, int_port, ex_gw_port):
         """Checks and returns the matching state for v4 or v6 scopes."""
@@ -727,7 +739,7 @@ class DvrLocalRouter(dvr_router_base.DvrRouterBase):
                 self.agent.context, ex_gw_port['network_id'])
             LOG.debug("FloatingIP agent gateway port received from the "
                       "plugin: %s", fip_agent_port)
-        self.fip_ns.create_or_update_gateway_port(fip_agent_port)
+        self.fip_ns.create_or_update_gateway_port(self, fip_agent_port)
 
     def update_routing_table(self, operation, route):
         # TODO(Swami): The static routes should be added to the

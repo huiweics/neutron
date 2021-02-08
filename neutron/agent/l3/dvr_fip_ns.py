@@ -121,7 +121,7 @@ class FipNamespace(namespaces.Namespace):
                     LOG.error('DVR: FIP namespace config failure '
                               'for interface %s', interface_name)
 
-    def create_or_update_gateway_port(self, agent_gateway_port):
+    def create_or_update_gateway_port(self, ri, agent_gateway_port):
         interface_name = self.get_ext_device_name(agent_gateway_port['id'])
 
         # The lock is used to make sure another thread doesn't call to
@@ -139,8 +139,9 @@ class FipNamespace(namespaces.Namespace):
                 self._create_gateway_port(agent_gateway_port, interface_name)
             else:
                 try:
-                    self._update_gateway_port(
+                    self._update_gateway_port(ri,
                         agent_gateway_port, interface_name)
+                    self.agent_gateway_port = agent_gateway_port
                 except Exception:
                     # If an exception occurs at this point, then it is
                     # good to clean up the namespace that has been created
@@ -265,43 +266,52 @@ class FipNamespace(namespaces.Namespace):
         else:
             ip_device.route.add_gateway(gw_ip, table=tbl_index)
 
-    def _add_rtr_ext_route_rule_to_route_table(self, ri, fip_2_rtr,
-                                               fip_2_rtr_name):
+    def update_rtr_ext_route_rule_to_route_table(self, ri, fip_2_rtr_name):
         """Creates external route table and adds routing rules."""
-        # TODO(Swami): Rename the _get_snat_idx function to some
-        # generic name that can be used for SNAT and FIP
-        rt_tbl_index = ri._get_snat_idx(fip_2_rtr)
-        interface_name = self.get_ext_device_name(
-            self.agent_gateway_port['id'])
-        try:
-            # The lock is used to make sure another thread doesn't call to
-            # update the gateway route before we are done initializing things.
-            with self._fip_port_lock(interface_name):
-                self._update_gateway_route(self.agent_gateway_port,
-                                           interface_name,
-                                           tbl_index=rt_tbl_index)
-        except Exception:
-            # If an exception occurs at this point, then it is
-            # good to unsubscribe this external network so that
-            # the next call will trigger the interface to be plugged.
-            # We reraise the exception in order to resync the router.
-            with excutils.save_and_reraise_exception():
-                self.unsubscribe(self.agent_gateway_port['network_id'])
-                self.agent_gateway_port = None
-                LOG.exception('DVR: Gateway setup in FIP namespace '
-                              'failed')
+        agent_gw_port = self.agent_gateway_port
+        subnets = agent_gw_port['subnets'] + agent_gw_port['extra_subnets']
+        for subnet in subnets:
+            # TODO(Swami): Rename the _get_snat_idx function to some
+            # generic name that can be used for SNAT and FIP
+            rt_tbl_index = ri._get_snat_idx(subnet.get('cidr'))
+            interface_name = self.get_ext_device_name(
+                self.agent_gateway_port['id'])
+            try:
+                # The lock is used to make sure another thread doesn't call to
+                # update the gateway route before we are done initializing things.
+                with self._fip_port_lock(interface_name):
+                    self._update_gateway_route(self.agent_gateway_port,
+                                               interface_name,
+                                               subnet,
+                                               tbl_index=rt_tbl_index)
+            except Exception:
+                # If an exception occurs at this point, then it is
+                # good to unsubscribe this external network so that
+                # the next call will trigger the interface to be plugged.
+                # We reraise the exception in order to resync the router.
+                with excutils.save_and_reraise_exception():
+                    self.unsubscribe(self.agent_gateway_port['network_id'])
+                    self.agent_gateway_port = None
+                    LOG.exception('DVR: Gateway setup in FIP namespace '
+                                  'failed')
+            LOG.debug("ip rule add subnet=%s, rt_tbl_index=%s" %(subnet, rt_tbl_index))
+            # Now add the filter match rule for the table.
+            ip_lib.add_ip_rule(namespace=self.get_name(), ip=subnet.get('cidr'),
+                               iif=fip_2_rtr_name, table=rt_tbl_index,
+                               priority=rt_tbl_index)
+            ip_lib.add_ip_rule(namespace=self.get_name(), ip=None,
+                               iif=fip_2_rtr_name, table='main',
+                               priority=FIP_PR_START, to=subnet.get('cidr'))
 
-        # Now add the filter match rule for the table.
-        ip_lib.add_ip_rule(namespace=self.get_name(), ip=str(fip_2_rtr.ip),
-                           iif=fip_2_rtr_name, table=rt_tbl_index,
-                           priority=rt_tbl_index)
-
-    def _update_gateway_port(self, agent_gateway_port, interface_name):
+    def _update_gateway_port(self, ri, agent_gateway_port, interface_name):
         if (not self.agent_gateway_port or
-                self._check_for_gateway_ip_change(agent_gateway_port)):
+                self._check_for_gateway_ip_change(agent_gateway_port)): 
             # Caller already holding lock
-            self._update_gateway_route(
-                agent_gateway_port, interface_name, tbl_index=None)
+            subnets = agent_gateway_port['subnets'] + agent_gateway_port['extra_subnets']
+            for subnet in subnets:
+                tbl_index = ri._get_snat_idx(subnet.get('cidr'))
+                self._update_gateway_route(
+                    agent_gateway_port, interface_name, subnet, tbl_index=tbl_index)
 
             # Cache the agent gateway port after successfully updating
             # the gateway route, so that checking on self.agent_gateway_port
@@ -316,7 +326,7 @@ class FipNamespace(namespaces.Namespace):
             is_ipv6=False)
 
     def _update_gateway_route(self, agent_gateway_port,
-                              interface_name, tbl_index):
+                              interface_name, subnet, tbl_index):
         ns_name = self.get_name()
         ipd = ip_lib.IPDevice(interface_name, namespace=ns_name)
         # If the 'fg-' device doesn't exist in the namespace then trying
@@ -337,18 +347,17 @@ class FipNamespace(namespaces.Namespace):
                                           interface_name,
                                           fixed_ip['ip_address'])
 
-        for subnet in agent_gateway_port['subnets']:
-            gw_ip = subnet.get('gateway_ip')
-            if gw_ip:
-                is_gateway_not_in_subnet = not ipam_utils.check_subnet_ip(
-                                                subnet.get('cidr'), gw_ip)
-                if is_gateway_not_in_subnet:
-                    ipd.route.add_route(gw_ip, scope='link')
-                self._add_default_gateway_for_fip(gw_ip, ipd, tbl_index)
-            else:
-                current_gateway = ipd.route.get_gateway()
-                if current_gateway and current_gateway.get('gateway'):
-                    ipd.route.delete_gateway(current_gateway.get('gateway'))
+        gw_ip = subnet.get('gateway_ip')
+        if gw_ip:
+            is_gateway_not_in_subnet = not ipam_utils.check_subnet_ip(
+                                            subnet.get('cidr'), gw_ip)
+            if is_gateway_not_in_subnet:
+                ipd.route.add_route(gw_ip, scope='link')
+            self._add_default_gateway_for_fip(gw_ip, ipd, tbl_index)
+        else:
+            current_gateway = ipd.route.get_gateway()
+            if current_gateway and current_gateway.get('gateway'):
+                ipd.route.delete_gateway(current_gateway.get('gateway'))
 
     def _add_cidr_to_device(self, device, ip_cidr):
         to = common_utils.cidr_to_ip(ip_cidr)
@@ -379,23 +388,29 @@ class FipNamespace(namespaces.Namespace):
                 fg_device = ip_lib.IPDevice(
                     interface_name, namespace=fip_ns_name)
                 if fg_device.exists():
-                    # Remove the fip namespace rules and routes associated to
-                    # fpr interface route table.
-                    tbl_index = ri._get_snat_idx(fip_2_rtr)
-                    # Flush the table
-                    fg_device.route.flush(lib_constants.IP_VERSION_4,
-                                          table=tbl_index)
-                    fg_device.route.flush(lib_constants.IP_VERSION_6,
-                                          table=tbl_index)
-                    # Remove the rule lookup
-                    # /0 addresses for IPv4 and IPv6 are used to pass
-                    # IP protocol version information based on a
-                    # link-local address IP version. Using any of those
-                    # is equivalent to using 'from all' for iproute2.
-                    rule_ip = lib_constants.IP_ANY[fip_2_rtr.ip.version]
-                    ip_lib.delete_ip_rule(fip_ns_name, ip=rule_ip,
-                                          iif=fip_2_rtr_name, table=tbl_index,
-                                          priority=tbl_index)
+                    gw_port = self.agent_gateway_port
+                    subnets = gw_port['subnets'] + gw_port['extra_subnets']
+                    for subnet in subnets:
+                        # Remove the fip namespace rules and routes associated to
+                        # fpr interface route table.
+                        tbl_index = ri._get_snat_idx(subnet.get('cidr'))
+                        # Flush the table
+                        fg_device.route.flush(lib_constants.IP_VERSION_4,
+                                              table=tbl_index)
+                        fg_device.route.flush(lib_constants.IP_VERSION_6,
+                                              table=tbl_index)
+                        # Remove the rule lookup
+                        # /0 addresses for IPv4 and IPv6 are used to pass
+                        # IP protocol version information based on a
+                        # link-local address IP version. Using any of those
+                        # is equivalent to using 'from all' for iproute2.
+                        #rule_ip = lib_constants.IP_ANY[fip_2_rtr.ip.version]
+                        ip_lib.delete_ip_rule(fip_ns_name, ip=subnet.get('cidr'),
+                                              iif=fip_2_rtr_name, table=tbl_index,
+                                              priority=tbl_index)
+                        ip_lib.delete_ip_rule(fip_ns_name, ip=None,
+                                              iif=fip_2_rtr_name, table='main',
+                                              priority=FIP_PR_START, to=subnet.get('cidr'))
             self.local_subnets.release(ri.router_id)
             ri.rtr_fip_subnet = None
 
@@ -440,9 +455,6 @@ class FipNamespace(namespaces.Namespace):
                                 fip_2_rtr_dev.link.address)
         fip_2_rtr_dev.neigh.add(common_utils.cidr_to_ip(rtr_2_fip),
                                 rtr_2_fip_dev.link.address)
-
-        self._add_rtr_ext_route_rule_to_route_table(ri, fip_2_rtr,
-                                                    fip_2_rtr_name)
 
         # add default route for the link local interface
         rtr_2_fip_dev.route.add_gateway(str(fip_2_rtr.ip), table=FIP_RT_TBL)
